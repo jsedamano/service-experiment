@@ -191,6 +191,35 @@ def app_page(title, eyebrow, body, **context):
                     line-height: 1.55;
                 }
 
+                .alert {
+                    display: grid;
+                    grid-template-columns: 12px minmax(0, 1fr);
+                    gap: 12px;
+                    align-items: start;
+                    margin: 0 0 18px;
+                    padding: 14px;
+                    border: 1px solid rgba(233, 79, 100, 0.24);
+                    border-radius: 8px;
+                    background: rgba(233, 79, 100, 0.08);
+                    color: #7d2534;
+                    line-height: 1.45;
+                }
+
+                .alert-dot {
+                    width: 10px;
+                    height: 10px;
+                    margin-top: 6px;
+                    border-radius: 50%;
+                    background: var(--accent-2);
+                    box-shadow: 0 0 0 6px rgba(233, 79, 100, 0.13);
+                }
+
+                .alert strong {
+                    display: block;
+                    margin-bottom: 2px;
+                    color: #5f1e2a;
+                }
+
                 form {
                     display: grid;
                     gap: 14px;
@@ -220,6 +249,11 @@ def app_page(title, eyebrow, body, **context):
                 input:focus {
                     border-color: rgba(15, 159, 143, 0.8);
                     box-shadow: 0 0 0 4px rgba(15, 159, 143, 0.14);
+                }
+
+                input.has-error {
+                    border-color: rgba(233, 79, 100, 0.72);
+                    box-shadow: 0 0 0 4px rgba(233, 79, 100, 0.11);
                 }
 
                 button,
@@ -621,27 +655,30 @@ def init_db():
     conn.close()
 
 
-# Define URLs using routes
-@app.route("/")
-def index():
-    # Check if the user is already logged in
-    if "username" in session:
-        return redirect("/home")
-
-    # Return to the browser (log in page) if user is not logged in
+def login_page(error=None, username=""):
     return app_page("Log In", "Welcome back", """
         <h2>Access your account</h2>
         <p>Enter your username and password to continue.</p>
 
+        {% if error %}
+            <div class="alert" role="alert">
+                <span class="alert-dot" aria-hidden="true"></span>
+                <span>
+                    <strong>Could not sign you in</strong>
+                    {{ error }}
+                </span>
+            </div>
+        {% endif %}
+
         <form action="/login" method="POST">
             <label>
                 Username
-                <input name="username" placeholder="Your username" autocomplete="username" required>
+                <input class="{% if error %}has-error{% endif %}" name="username" value="{{ username }}" placeholder="Your username" autocomplete="username" required>
             </label>
 
             <label>
                 Password
-                <input name="password" type="password" placeholder="Your password" autocomplete="current-password" required>
+                <input class="{% if error %}has-error{% endif %}" name="password" type="password" placeholder="Your password" autocomplete="current-password" required>
             </label>
 
             <button type="submit">Log In</button>
@@ -650,34 +687,59 @@ def index():
         <div class="link-row">
             New here? <a href="/register">Create an account</a>
         </div>
-    """)
+    """, error=error, username=username)
+
+
+def register_page(error=None, username=""):
+    return app_page("Create Account", "Start fresh", """
+        <h2>Make your profile</h2>
+        <p>Choose a username and password to create your account.</p>
+
+        {% if error %}
+            <div class="alert" role="alert">
+                <span class="alert-dot" aria-hidden="true"></span>
+                <span>
+                    <strong>Username already taken</strong>
+                    {{ error }}
+                </span>
+            </div>
+        {% endif %}
+
+        <form action="/register" method="POST">
+            <label>
+                Username
+                <input class="{% if error %}has-error{% endif %}" name="username" value="{{ username }}" placeholder="Choose a username" autocomplete="username" required>
+            </label>
+
+            <label>
+                Password
+                <input name="password" type="password" placeholder="Choose a password" autocomplete="new-password" required>
+            </label>
+
+            <button type="submit">Create Account</button>
+        </form>
+
+        <div class="link-row">
+            Already have an account? <a href="/">Back to Log In</a>
+        </div>
+    """, error=error, username=username)
+
+
+# Define URLs using routes
+@app.route("/")
+def index():
+    # Check if the user is already logged in
+    if "username" in session:
+        return redirect("/home")
+
+    # Return to the browser (log in page) if user is not logged in
+    return login_page()
 
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "GET":
-        return app_page("Create Account", "Start fresh", """
-            <h2>Make your profile</h2>
-            <p>Choose a username and password to create your account.</p>
-
-            <form action="/register" method="POST">
-                <label>
-                    Username
-                    <input name="username" placeholder="Choose a username" autocomplete="username" required>
-                </label>
-
-                <label>
-                    Password
-                    <input name="password" type="password" placeholder="Choose a password" autocomplete="new-password" required>
-                </label>
-
-                <button type="submit">Create Account</button>
-            </form>
-
-            <div class="link-row">
-                Already have an account? <a href="/">Back to Log In</a>
-            </div>
-        """)
+        return register_page()
 
     username = request.form["username"]
     password = request.form["password"]
@@ -699,7 +761,10 @@ def register():
         return redirect("/")
 
     except psycopg2.IntegrityError:
-        return "That username already exists. <a href='/register'>Try again</a>"
+        return register_page(
+            "Try another username, or go back to the log in page if this account is yours.",
+            username
+        ), 409
     except (psycopg2.OperationalError, psycopg2.InterfaceError):
         return service_unavailable_page()
     finally:
@@ -739,7 +804,10 @@ def login():
         session["username"] = username
         return redirect("/home")
 
-    return "Invalid username or password. <a href='/'>Try again</a>"
+    return login_page(
+        "Check your username and password, then try again.",
+        username
+    ), 401
 
 
 @app.route("/home")
