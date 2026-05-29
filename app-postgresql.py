@@ -1,5 +1,6 @@
 from flask import Flask, request, redirect, session, render_template_string
 import psycopg2
+from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)       # Creates web app (app is the object that controls the website)
@@ -229,9 +230,9 @@ def service_unavailable_page():
                     <p class="eyebrow">Temporary outage</p>
                     <h1>We are sorry.</h1>
                     <p class="message">
-                        This service is currently not available. Our database connection
-                        is taking a break, but the app is still here and ready to welcome
-                        you back soon.
+                        This service is currently not available. Something needs our
+                        attention behind the scenes, but the app is still here and ready
+                        to welcome you back soon.
                     </p>
                     <div class="status" aria-label="Service status">
                         <span class="pulse" aria-hidden="true"></span>
@@ -266,6 +267,14 @@ def service_unavailable_page():
 @app.errorhandler(psycopg2.OperationalError)
 @app.errorhandler(psycopg2.InterfaceError)
 def handle_database_connection_error(error):
+    return service_unavailable_page()
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(error):
+    if isinstance(error, HTTPException):
+        return error
+
     return service_unavailable_page()
 
 
