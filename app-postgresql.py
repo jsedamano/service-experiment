@@ -1,22 +1,44 @@
 from flask import Flask, request, redirect, session, render_template_string
+import os
 import psycopg2
 import time
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)       # Creates web app (app is the object that controls the website)
-app.secret_key = "dev-secret-key"  # Needed for sessions. Fine for localhost practice.
+
+
+def load_env_file(filename=".env"):
+    if not os.path.exists(filename):
+        return
+
+    with open(filename) as env_file:
+        for line in env_file:
+            line = line.strip()
+
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+load_env_file()
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")  # Needed for sessions. Use a strong value in .env.
+APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")
+APP_PORT = int(os.environ.get("APP_PORT", 5000))
+FLASK_DEBUG = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
 
 MAX_LOGIN_ATTEMPTS = 3
 LOGIN_TIMEOUT_SECONDS = 60
 login_attempts = {}
 
 DB_CONFIG = {
-    "dbname": "login_db",
-    "user": "login_user",
-    "password": "Ubuntu2005&",
-    "host": "localhost",
-    "port": 5432
+    "dbname": os.environ["DB_NAME"],
+    "user": os.environ["DB_USER"],
+    "password": os.environ["DB_PASSWORD"],
+    "host": os.environ["DB_HOST"],
+    "port": int(os.environ.get("DB_PORT", 5432))
 }
 
 def get_db_connection():
@@ -955,4 +977,4 @@ if __name__ == "__main__":
         init_db()
     except (psycopg2.OperationalError, psycopg2.InterfaceError):
         print("PostgreSQL is unavailable. Starting the web app with the friendly error page enabled.")
-    app.run(host="0.0.0.0", port=5000,debug=True)
+    app.run(host=APP_HOST, port=APP_PORT, debug=FLASK_DEBUG)
