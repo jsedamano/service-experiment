@@ -1,10 +1,15 @@
 from flask import Flask, request, redirect, session, render_template_string
 import psycopg2
+import time
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)       # Creates web app (app is the object that controls the website)
 app.secret_key = "dev-secret-key"  # Needed for sessions. Fine for localhost practice.
+
+MAX_LOGIN_ATTEMPTS = 3
+LOGIN_TIMEOUT_SECONDS = 60
+login_attempts = {}
 
 DB_CONFIG = {
     "dbname": "login_db",
@@ -16,6 +21,43 @@ DB_CONFIG = {
 
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG)
+
+
+def get_login_attempt_key():
+    return request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+
+
+def get_login_timeout_remaining():
+    attempt_key = get_login_attempt_key()
+    attempt = login_attempts.get(attempt_key)
+
+    if not attempt:
+        return 0
+
+    locked_until = attempt.get("locked_until", 0)
+    if not locked_until:
+        return 0
+
+    remaining_seconds = int(locked_until - time.time())
+
+    if remaining_seconds <= 0:
+        login_attempts.pop(attempt_key, None)
+        return 0
+
+    return remaining_seconds
+
+
+def record_failed_login_attempt():
+    attempt_key = get_login_attempt_key()
+    attempt = login_attempts.setdefault(attempt_key, {"count": 0, "locked_until": 0})
+    attempt["count"] += 1
+
+    if attempt["count"] >= MAX_LOGIN_ATTEMPTS:
+        attempt["locked_until"] = time.time() + LOGIN_TIMEOUT_SECONDS
+
+
+def clear_login_attempts():
+    login_attempts.pop(get_login_attempt_key(), None)
 
 
 def app_page(title, eyebrow, body, **context):
@@ -279,6 +321,17 @@ def app_page(title, eyebrow, body, **context):
                 .button:hover {
                     background: var(--accent-dark);
                     transform: translateY(-1px);
+                }
+
+                button:disabled,
+                input:disabled {
+                    cursor: not-allowed;
+                    opacity: 0.62;
+                }
+
+                button:disabled:hover {
+                    background: var(--accent);
+                    transform: none;
                 }
 
                 .link-row {
@@ -655,10 +708,16 @@ def init_db():
     conn.close()
 
 
-def login_page(error=None, username=""):
+def login_page(error=None, username="", timeout_remaining=0):
     return app_page("Log In", "Welcome back", """
         <h2>Access your account</h2>
-        <p>Enter your username and password to continue.</p>
+        <p>
+            {% if timeout_remaining %}
+                Too many failed attempts. Try again when the countdown ends.
+            {% else %}
+                Enter your username and password to continue.
+            {% endif %}
+        </p>
 
         {% if error %}
             <div class="alert" role="alert">
@@ -673,21 +732,48 @@ def login_page(error=None, username=""):
         <form action="/login" method="POST">
             <label>
                 Username
-                <input class="{% if error %}has-error{% endif %}" name="username" value="{{ username }}" placeholder="Your username" autocomplete="username" required>
+                <input class="{% if error %}has-error{% endif %}" name="username" value="{{ username }}" placeholder="Your username" autocomplete="username" required {% if timeout_remaining %}disabled{% endif %}>
             </label>
 
             <label>
                 Password
-                <input class="{% if error %}has-error{% endif %}" name="password" type="password" placeholder="Your password" autocomplete="current-password" required>
+                <input class="{% if error %}has-error{% endif %}" name="password" type="password" placeholder="Your password" autocomplete="current-password" required {% if timeout_remaining %}disabled{% endif %}>
             </label>
 
-            <button type="submit">Log In</button>
+            <button id="login-button" type="submit" {% if timeout_remaining %}disabled{% endif %}>
+                {% if timeout_remaining %}
+                    Locked for {{ timeout_remaining }} seconds
+                {% else %}
+                    Log In
+                {% endif %}
+            </button>
         </form>
+
+        {% if timeout_remaining %}
+            <script>
+                let timeLeft = {{ timeout_remaining }};
+                const formControls = document.querySelectorAll("input, #login-button");
+                const loginButton = document.querySelector("#login-button");
+
+                const countdown = setInterval(() => {
+                    timeLeft -= 1;
+
+                    if (timeLeft <= 0) {
+                        clearInterval(countdown);
+                        formControls.forEach((control) => control.disabled = false);
+                        loginButton.textContent = "Log In";
+                        return;
+                    }
+
+                    loginButton.textContent = `Locked for ${timeLeft} seconds`;
+                }, 1000);
+            </script>
+        {% endif %}
 
         <div class="link-row">
             New here? <a href="/register">Create an account</a>
         </div>
-    """, error=error, username=username)
+    """, error=error, username=username, timeout_remaining=timeout_remaining)
 
 
 def register_page(error=None, username=""):
@@ -733,6 +819,13 @@ def index():
         return redirect("/home")
 
     # Return to the browser (log in page) if user is not logged in
+    timeout_remaining = get_login_timeout_remaining()
+    if timeout_remaining:
+        return login_page(
+            f"Too many failed attempts. Please wait {timeout_remaining} seconds before trying again.",
+            timeout_remaining=timeout_remaining
+        ), 429
+
     return login_page()
 
 
@@ -778,6 +871,14 @@ def register():
 def login():
     username = request.form["username"]
     password = request.form["password"]
+    timeout_remaining = get_login_timeout_remaining()
+
+    if timeout_remaining:
+        return login_page(
+            f"Too many failed attempts. Please wait {timeout_remaining} seconds before trying again.",
+            username,
+            timeout_remaining
+        ), 429
 
     conn = None
     cursor = None
@@ -801,8 +902,19 @@ def login():
             conn.close()
 
     if user and check_password_hash(user[0], password):
+        clear_login_attempts()
         session["username"] = username
         return redirect("/home")
+
+    record_failed_login_attempt()
+    timeout_remaining = get_login_timeout_remaining()
+
+    if timeout_remaining:
+        return login_page(
+            f"Too many failed attempts. Please wait {timeout_remaining} seconds before trying again.",
+            username,
+            timeout_remaining
+        ), 429
 
     return login_page(
         "Check your username and password, then try again.",
