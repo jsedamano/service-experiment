@@ -1,6 +1,7 @@
 from flask import Flask, request, redirect, session, render_template_string
 import os
 import psycopg2
+import re
 import time
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -31,6 +32,9 @@ FLASK_DEBUG = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
 
 MAX_LOGIN_ATTEMPTS = 3
 LOGIN_TIMEOUT_SECONDS = 60
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,30}$")
+MIN_PASSWORD_LENGTH = 8
+MAX_PASSWORD_LENGTH = 128
 login_attempts = {}
 
 DB_CONFIG = {
@@ -43,6 +47,46 @@ DB_CONFIG = {
 
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG)
+
+
+def normalize_username(username):
+    return username.strip()
+
+
+def password_has_control_characters(password):
+    return any(ord(character) < 32 or ord(character) == 127 for character in password)
+
+
+def validate_username(username):
+    if not USERNAME_PATTERN.fullmatch(username):
+        return "Usernames must be 3-30 characters and can only use letters, numbers, dots, underscores, or hyphens."
+
+    return None
+
+
+def validate_registration_input(username, password):
+    username_error = validate_username(username)
+    if username_error:
+        return username_error
+
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"Passwords must be at least {MIN_PASSWORD_LENGTH} characters long."
+
+    if len(password) > MAX_PASSWORD_LENGTH:
+        return f"Passwords must be {MAX_PASSWORD_LENGTH} characters or fewer."
+
+    if password_has_control_characters(password):
+        return "Passwords cannot include control characters."
+
+    return None
+
+
+def login_input_looks_safe(username, password):
+    return (
+        validate_username(username) is None
+        and len(password) <= MAX_PASSWORD_LENGTH
+        and not password_has_control_characters(password)
+    )
 
 
 def get_login_attempt_key():
@@ -754,12 +798,12 @@ def login_page(error=None, username="", timeout_remaining=0):
         <form action="/login" method="POST">
             <label>
                 Username
-                <input class="{% if error %}has-error{% endif %}" name="username" value="{{ username }}" placeholder="Your username" autocomplete="username" required {% if timeout_remaining %}disabled{% endif %}>
+                <input class="{% if error %}has-error{% endif %}" name="username" value="{{ username }}" placeholder="Your username" autocomplete="username" minlength="3" maxlength="30" pattern="[A-Za-z0-9._-]{3,30}" title="Use 3-30 letters, numbers, dots, underscores, or hyphens." required {% if timeout_remaining %}disabled{% endif %}>
             </label>
 
             <label>
                 Password
-                <input class="{% if error %}has-error{% endif %}" name="password" type="password" placeholder="Your password" autocomplete="current-password" required {% if timeout_remaining %}disabled{% endif %}>
+                <input class="{% if error %}has-error{% endif %}" name="password" type="password" placeholder="Your password" autocomplete="current-password" maxlength="128" required {% if timeout_remaining %}disabled{% endif %}>
             </label>
 
             <button id="login-button" type="submit" {% if timeout_remaining %}disabled{% endif %}>
@@ -807,7 +851,7 @@ def register_page(error=None, username=""):
             <div class="alert" role="alert">
                 <span class="alert-dot" aria-hidden="true"></span>
                 <span>
-                    <strong>Username already taken</strong>
+                    <strong>Could not create account</strong>
                     {{ error }}
                 </span>
             </div>
@@ -816,12 +860,12 @@ def register_page(error=None, username=""):
         <form action="/register" method="POST">
             <label>
                 Username
-                <input class="{% if error %}has-error{% endif %}" name="username" value="{{ username }}" placeholder="Choose a username" autocomplete="username" required>
+                <input class="{% if error %}has-error{% endif %}" name="username" value="{{ username }}" placeholder="Choose a username" autocomplete="username" minlength="3" maxlength="30" pattern="[A-Za-z0-9._-]{3,30}" title="Use 3-30 letters, numbers, dots, underscores, or hyphens." required>
             </label>
 
             <label>
                 Password
-                <input name="password" type="password" placeholder="Choose a password" autocomplete="new-password" required>
+                <input name="password" type="password" placeholder="Choose a password" autocomplete="new-password" minlength="8" maxlength="128" required>
             </label>
 
             <button type="submit">Create Account</button>
@@ -856,8 +900,12 @@ def register():
     if request.method == "GET":
         return register_page()
 
-    username = request.form["username"]
-    password = request.form["password"]
+    username = normalize_username(request.form.get("username", ""))
+    password = request.form.get("password", "")
+    validation_error = validate_registration_input(username, password)
+
+    if validation_error:
+        return register_page(validation_error, username), 400
 
     password_hash = generate_password_hash(password)
 
@@ -891,8 +939,8 @@ def register():
 
 @app.route("/login", methods=["POST"])
 def login():
-    username = request.form["username"]
-    password = request.form["password"]
+    username = normalize_username(request.form.get("username", ""))
+    password = request.form.get("password", "")
     timeout_remaining = get_login_timeout_remaining()
 
     if timeout_remaining:
@@ -901,6 +949,22 @@ def login():
             username,
             timeout_remaining
         ), 429
+
+    if not login_input_looks_safe(username, password):
+        record_failed_login_attempt()
+        timeout_remaining = get_login_timeout_remaining()
+
+        if timeout_remaining:
+            return login_page(
+                f"Too many failed attempts. Please wait {timeout_remaining} seconds before trying again.",
+                username,
+                timeout_remaining
+            ), 429
+
+        return login_page(
+            "Check your username and password, then try again.",
+            username
+        ), 401
 
     conn = None
     cursor = None
