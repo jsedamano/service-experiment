@@ -26,15 +26,30 @@ def load_env_file(filename=".env"):
 
 load_env_file()
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")  # Needed for sessions. Use a strong value in .env.
+APP_ENV = os.environ.get("APP_ENV", "production").lower()
 APP_HOST = os.environ.get("APP_HOST", "0.0.0.0")
 APP_PORT = int(os.environ.get("APP_PORT", 5000))
-FLASK_DEBUG = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+FLASK_DEBUG = APP_ENV == "development" and os.environ.get("FLASK_DEBUG", "false").lower() == "true"
 
-MAX_LOGIN_ATTEMPTS = 3
-LOGIN_TIMEOUT_SECONDS = 60
+MAX_LOGIN_ATTEMPTS = int(os.environ.get("MAX_LOGIN_ATTEMPTS", 3))
+LOGIN_TIMEOUT_SECONDS = int(os.environ.get("LOGIN_TIMEOUT_SECONDS", 60))
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,30}$")
-MIN_PASSWORD_LENGTH = 8
+MIN_PASSWORD_LENGTH = 12
 MAX_PASSWORD_LENGTH = 128
+COMMON_PASSWORDS = {
+    "12345678",
+    "123456789",
+    "1234567890",
+    "admin123",
+    "letmein",
+    "password",
+    "password1",
+    "password123",
+    "qwerty",
+    "qwerty123",
+    "welcome",
+    "welcome123",
+}
 login_attempts = {}
 
 DB_CONFIG = {
@@ -69,6 +84,8 @@ def validate_registration_input(username, password):
     if username_error:
         return username_error
 
+    password_lower = password.lower()
+
     if len(password) < MIN_PASSWORD_LENGTH:
         return f"Passwords must be at least {MIN_PASSWORD_LENGTH} characters long."
 
@@ -77,6 +94,24 @@ def validate_registration_input(username, password):
 
     if password_has_control_characters(password):
         return "Passwords cannot include control characters."
+
+    if password_lower in COMMON_PASSWORDS:
+        return "Choose a less common password."
+
+    if username.lower() in password_lower:
+        return "Passwords cannot include your username."
+
+    if not re.search(r"[a-z]", password):
+        return "Passwords must include at least one lowercase letter."
+
+    if not re.search(r"[A-Z]", password):
+        return "Passwords must include at least one uppercase letter."
+
+    if not re.search(r"\d", password):
+        return "Passwords must include at least one number."
+
+    if not re.search(r"[^A-Za-z0-9]", password):
+        return "Passwords must include at least one symbol."
 
     return None
 
@@ -865,7 +900,7 @@ def register_page(error=None, username=""):
 
             <label>
                 Password
-                <input name="password" type="password" placeholder="Choose a password" autocomplete="new-password" minlength="8" maxlength="128" required>
+                <input name="password" type="password" placeholder="Choose a password" autocomplete="new-password" minlength="12" maxlength="128" required>
             </label>
 
             <button type="submit">Create Account</button>
